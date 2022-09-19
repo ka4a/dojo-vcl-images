@@ -1,0 +1,18 @@
+combiner:
+  combinations:
+  - name: project2-cpp-monitor
+    ref: []
+    chunks:
+    - vscode:4.4.0
+    - cpp
+  - name: python-dog-image-classifier
+    ref: []
+    chunks:
+    - vscode:4.4.0
+    - pytorch:3.9
+    - nvidia-gpu-support
+  - name: load-tests
+    ref: []
+    chunks:
+    - vscode:4.4.0
+    - stress-ng

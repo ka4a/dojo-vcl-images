@@ -1,0 +1,5 @@
+variants:
+  - name: "3.9"
+    args:
+      PYTHON_VERSION: 3.9
+      PYTHON_VERSION_PIP: 3

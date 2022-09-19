@@ -1,0 +1,4 @@
+variants:
+  - name: "4.4.0"
+    args:
+      VSCODE_VERSION: 4.4.0

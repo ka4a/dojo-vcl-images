@@ -1,0 +1,101 @@
+name: Build from master
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-northeast-1
+  ECR_REPO_NAME: vcl_coding_environments
+
+jobs:
+  sync:
+    runs-on: ubuntu-20.04
+    environment: "production"
+    permissions:
+      id-token: write
+      contents: read    # This is required for actions/checkout
+  
+    steps:
+      - name: 📥 Checkout workspace-images
+        uses: actions/checkout@v2
+        with:
+          repository: reustleco/dojo-vcl-images
+
+      - name: 🔧 Setup tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip shellcheck
+          curl -sSL https://github.com/mvdan/sh/releases/download/v3.4.2/shfmt_v3.4.2_linux_amd64 -o shfmt
+          sudo mv shfmt /usr/local/bin/shfmt && sudo chmod +x /usr/local/bin/shfmt
+          sudo pip3 install pre-commit
+      
+      - name: 🔆 Install skopeo
+        run: |
+          . /etc/os-release
+          echo "deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_${VERSION_ID}/ /" | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
+          curl -L https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_${VERSION_ID}/Release.key | sudo apt-key add -
+          sudo apt-get update
+          sudo apt-get -y install skopeo
+
+      - name: 🔆 Install dazzle
+        run: |
+          curl -sSL https://github.com/gitpod-io/dazzle/releases/download/v0.1.7/dazzle_0.1.7_Linux_x86_64.tar.gz | sudo tar -xvz -C /usr/local/bin
+
+      - name: 🏗️ Setup buildkit
+        run: |
+          curl -sSL https://github.com/moby/buildkit/releases/download/v0.9.3/buildkit-v0.9.3.linux-amd64.tar.gz | sudo tar xvz -C /usr
+          sudo buildkitd &
+          sleep 10
+          sudo chmod +777 -R /run/buildkit/
+
+      - name: 🔧 Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: arn:aws:iam::762006128434:role/vcl-oidc-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 🔐 Authenticate to AWS ECR
+        id: "login-ecr"
+        uses: aws-actions/amazon-ecr-login@v1
+      
+      - name: ✍🏽 Login to AWS ECR using skopeo
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | sudo skopeo login -u AWS --password-stdin ${{env.ECR_REGISTRY}}
+
+      - name: 🔨 Dazzle build
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          dazzle build ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO_NAME }} --no-cache
+
+      - name: 🖇️ Dazzle combine
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          dazzle combine ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO_NAME }} --all
+
+      - name: 🔧 Setup copy tools
+        run: |
+          sudo pip3 install yq
+
+      - name: 📋 Copy images with tag in the Artifact Registry
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          IMAGE_TAGS=$(cat dazzle.yaml | yq '.combiner.combinations[].name' -r | tr '\n' ' ')
+          COPY_JOBS_PIDS=""
+          for IMAGE_TAG in ${IMAGE_TAGS[@]};
+          do
+            sudo skopeo copy \
+            docker://${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO_NAME }}:$IMAGE_TAG \
+            docker://${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO_NAME }}:$IMAGE_TAG-${{ github.sha }} &
+            COPY_JOBS_PIDS="$COPY_JOBS_PIDS $!"
+          done
+          for COPY_JOBS_PID in $COPY_JOBS_PIDS; do
+              wait $COPY_JOBS_PID || exit 1
+          done
